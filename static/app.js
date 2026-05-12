@@ -4,10 +4,9 @@ let pollInterval = null;
 const urlInput = document.getElementById("urlInput");
 const processBtn = document.getElementById("processBtn");
 const pasteBtn = document.getElementById("pasteBtn");
-const thresholdInput = document.getElementById("thresholdInput");
-const thresholdValue = document.getElementById("thresholdValue");
-const minSceneInput = document.getElementById("minSceneInput");
-const minSceneValue = document.getElementById("minSceneValue");
+const clipDurationInput = document.getElementById("clipDurationInput");
+const overlapInput = document.getElementById("overlapInput");
+const overlapValue = document.getElementById("overlapValue");
 
 const progressCard = document.getElementById("progressCard");
 const progressBar = document.getElementById("progressBar");
@@ -24,13 +23,25 @@ const clearAllBtn = document.getElementById("clearAllBtn");
 const errorCard = document.getElementById("errorCard");
 const errorMessage = document.getElementById("errorMessage");
 
-// Range inputs live update
-thresholdInput.addEventListener("input", () => {
-    thresholdValue.textContent = thresholdInput.value;
+// Preset buttons
+document.querySelectorAll(".preset-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+        document.querySelectorAll(".preset-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        clipDurationInput.value = btn.dataset.val;
+    });
 });
 
-minSceneInput.addEventListener("input", () => {
-    minSceneValue.textContent = minSceneInput.value;
+clipDurationInput.addEventListener("input", () => {
+    document.querySelectorAll(".preset-btn").forEach((b) => b.classList.remove("active"));
+    const val = parseInt(clipDurationInput.value);
+    document.querySelectorAll(".preset-btn").forEach((b) => {
+        if (parseInt(b.dataset.val) === val) b.classList.add("active");
+    });
+});
+
+overlapInput.addEventListener("input", () => {
+    overlapValue.textContent = overlapInput.value + " dtk";
 });
 
 // Paste button
@@ -46,7 +57,6 @@ pasteBtn.addEventListener("click", async () => {
 
 // Process button
 processBtn.addEventListener("click", startProcessing);
-
 urlInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") startProcessing();
 });
@@ -57,6 +67,14 @@ async function startProcessing() {
         urlInput.focus();
         urlInput.style.borderColor = "var(--error)";
         setTimeout(() => urlInput.style.borderColor = "", 1500);
+        return;
+    }
+
+    const clipDuration = parseFloat(clipDurationInput.value);
+    if (!clipDuration || clipDuration < 1) {
+        clipDurationInput.focus();
+        clipDurationInput.style.borderColor = "var(--error)";
+        setTimeout(() => clipDurationInput.style.borderColor = "", 1500);
         return;
     }
 
@@ -72,8 +90,8 @@ async function startProcessing() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 url,
-                threshold: parseFloat(thresholdInput.value),
-                min_scene_len: parseInt(minSceneInput.value),
+                clip_duration: clipDuration,
+                overlap: parseFloat(overlapInput.value),
             }),
         });
 
@@ -121,7 +139,7 @@ function updateProgress(job) {
     progressMessage.textContent = job.message || "";
 
     if (job.clips_done && job.total_scenes) {
-        progressClips.textContent = `${job.clips_done} / ${job.total_scenes} adegan`;
+        progressClips.textContent = `${job.clips_done} / ${job.total_scenes} klip`;
     } else {
         progressClips.textContent = "";
     }
@@ -133,7 +151,7 @@ function showResults(clips) {
     processBtn.innerHTML = '<span class="btn-icon-left">⚡</span> Proses Video';
 
     if (!clips || clips.length === 0) {
-        showError("Tidak ada klip yang dihasilkan. Coba turunkan nilai sensitivitas deteksi.");
+        showError("Tidak ada klip yang dihasilkan. Pastikan URL valid dan coba lagi.");
         return;
     }
 

@@ -1,9 +1,8 @@
 import os
 import uuid
 import threading
-import json
 import subprocess
-import re
+import math
 from flask import Flask, request, jsonify, send_from_directory, render_template
 from flask_cors import CORS
 
@@ -18,11 +17,22 @@ os.makedirs(CLIPS_FOLDER, exist_ok=True)
 jobs = {}
 
 
-def sanitize_filename(name):
-    return re.sub(r'[^\w\-_.]', '_', name)
+def get_video_duration(video_path):
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return float(result.stdout.strip())
 
 
-def run_job(job_id, url, threshold, min_scene_len):
+def run_job(job_id, url, clip_duration, overlap):
     try:
         jobs[job_id]["status"] = "downloading"
         jobs[job_id]["progress"] = 5
@@ -49,72 +59,42 @@ def run_job(job_id, url, threshold, min_scene_len):
             jobs[job_id]["message"] = f"Gagal mengunduh video: {dl_result.stderr[-300:]}"
             return
 
-        jobs[job_id]["progress"] = 40
-        jobs[job_id]["status"] = "detecting"
-        jobs[job_id]["message"] = "Mendeteksi adegan..."
+        jobs[job_id]["progress"] = 45
+        jobs[job_id]["status"] = "analyzing"
+        jobs[job_id]["message"] = "Menganalisis durasi video..."
 
-        scene_list_path = os.path.join(UPLOAD_FOLDER, f"{job_id}_scenes.json")
+        total_duration = get_video_duration(video_path)
+        step = clip_duration - overlap
+        if step <= 0:
+            step = clip_duration
 
-        detect_result = subprocess.run(
-            [
-                "python", "-c",
-                f"""
-import json
-from scenedetect import open_video, SceneManager
-from scenedetect.detectors import ContentDetector
+        starts = []
+        t = 0.0
+        while t < total_duration:
+            starts.append(t)
+            t += step
 
-video = open_video(r"{video_path}")
-scene_manager = SceneManager()
-scene_manager.add_detector(ContentDetector(threshold={threshold}, min_scene_len={min_scene_len}))
-scene_manager.detect_scenes(video)
-scenes = scene_manager.get_scene_list()
-result = []
-for start, end in scenes:
-    result.append({{"start": start.get_seconds(), "end": end.get_seconds()}})
-with open(r"{scene_list_path}", "w") as f:
-    json.dump(result, f)
-print(f"Found {{len(result)}} scenes")
-"""
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-
-        if detect_result.returncode != 0:
-            jobs[job_id]["status"] = "error"
-            jobs[job_id]["message"] = f"Gagal deteksi adegan: {detect_result.stderr[-300:]}"
-            return
-
-        with open(scene_list_path, "r") as f:
-            scenes = json.load(f)
-
-        if not scenes:
-            jobs[job_id]["status"] = "error"
-            jobs[job_id]["message"] = "Tidak ada adegan yang terdeteksi. Coba turunkan nilai threshold."
-            return
-
-        jobs[job_id]["progress"] = 60
+        total_clips = len(starts)
+        jobs[job_id]["total_scenes"] = total_clips
+        jobs[job_id]["progress"] = 55
         jobs[job_id]["status"] = "clipping"
-        jobs[job_id]["message"] = f"Memotong {len(scenes)} adegan..."
-        jobs[job_id]["total_scenes"] = len(scenes)
+        jobs[job_id]["message"] = f"Memotong menjadi {total_clips} klip..."
 
         clips = []
-        for i, scene in enumerate(scenes):
+        for i, start in enumerate(starts):
+            actual_duration = min(clip_duration, total_duration - start)
+            if actual_duration < 1.0:
+                break
+
             clip_filename = f"{job_id}_clip_{i+1:03d}.mp4"
             clip_path = os.path.join(CLIPS_FOLDER, clip_filename)
-            start = scene["start"]
-            duration = scene["end"] - scene["start"]
-
-            if duration < 0.5:
-                continue
 
             cut_result = subprocess.run(
                 [
                     "ffmpeg", "-y",
                     "-ss", str(start),
                     "-i", video_path,
-                    "-t", str(duration),
+                    "-t", str(actual_duration),
                     "-c:v", "libx264",
                     "-c:a", "aac",
                     "-movflags", "+faststart",
@@ -122,7 +102,7 @@ print(f"Found {{len(result)}} scenes")
                 ],
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=180,
             )
 
             if cut_result.returncode == 0 and os.path.exists(clip_path):
@@ -131,19 +111,17 @@ print(f"Found {{len(result)}} scenes")
                     "filename": clip_filename,
                     "index": i + 1,
                     "start": round(start, 2),
-                    "end": round(scene["end"], 2),
-                    "duration": round(duration, 2),
+                    "end": round(start + actual_duration, 2),
+                    "duration": round(actual_duration, 2),
                     "size_bytes": size_bytes,
                 })
 
-            progress = 60 + int((i + 1) / len(scenes) * 35)
+            progress = 55 + int((i + 1) / total_clips * 40)
             jobs[job_id]["progress"] = progress
             jobs[job_id]["clips_done"] = i + 1
 
         if os.path.exists(video_path):
             os.remove(video_path)
-        if os.path.exists(scene_list_path):
-            os.remove(scene_list_path)
 
         jobs[job_id]["status"] = "done"
         jobs[job_id]["progress"] = 100
@@ -164,11 +142,13 @@ def index():
 def process_video():
     data = request.get_json()
     url = data.get("url", "").strip()
-    threshold = float(data.get("threshold", 27.0))
-    min_scene_len = int(data.get("min_scene_len", 15))
+    clip_duration = float(data.get("clip_duration", 30))
+    overlap = float(data.get("overlap", 0))
 
     if not url:
         return jsonify({"error": "URL tidak boleh kosong"}), 400
+    if clip_duration < 1:
+        return jsonify({"error": "Durasi klip minimal 1 detik"}), 400
 
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {
@@ -179,7 +159,7 @@ def process_video():
         "url": url,
     }
 
-    thread = threading.Thread(target=run_job, args=(job_id, url, threshold, min_scene_len))
+    thread = threading.Thread(target=run_job, args=(job_id, url, clip_duration, overlap))
     thread.daemon = True
     thread.start()
 
