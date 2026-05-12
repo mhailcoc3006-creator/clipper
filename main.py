@@ -43,10 +43,11 @@ def run_job(job_id, url, clip_duration, overlap):
         dl_result = subprocess.run(
             [
                 "yt-dlp",
-                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "-f", "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
                 "--merge-output-format", "mp4",
                 "-o", video_path,
                 "--no-playlist",
+                "--concurrent-fragments", "4",
                 url,
             ],
             capture_output=True,
@@ -68,60 +69,60 @@ def run_job(job_id, url, clip_duration, overlap):
         if step <= 0:
             step = clip_duration
 
-        starts = []
-        t = 0.0
-        while t < total_duration:
-            starts.append(t)
-            t += step
-
-        total_clips = len(starts)
-        jobs[job_id]["total_scenes"] = total_clips
+        estimated_clips = max(1, int(total_duration / step))
+        jobs[job_id]["total_scenes"] = estimated_clips
         jobs[job_id]["progress"] = 55
         jobs[job_id]["status"] = "clipping"
-        jobs[job_id]["message"] = f"Memotong menjadi {total_clips} klip..."
+        jobs[job_id]["message"] = f"Memotong menjadi ~{estimated_clips} klip (stream copy)..."
 
-        clips = []
-        for i, start in enumerate(starts):
-            actual_duration = min(clip_duration, total_duration - start)
-            if actual_duration < 1.0:
-                break
+        clip_pattern = os.path.join(CLIPS_FOLDER, f"{job_id}_clip_%03d.mp4")
 
-            clip_filename = f"{job_id}_clip_{i+1:03d}.mp4"
-            clip_path = os.path.join(CLIPS_FOLDER, clip_filename)
+        cut_result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-c", "copy",
+                "-f", "segment",
+                "-segment_time", str(step),
+                "-reset_timestamps", "1",
+                "-movflags", "+faststart",
+                clip_pattern,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
 
-            cut_result = subprocess.run(
-                [
-                    "ffmpeg", "-y",
-                    "-ss", str(start),
-                    "-i", video_path,
-                    "-t", str(actual_duration),
-                    "-c:v", "libx264",
-                    "-c:a", "aac",
-                    "-movflags", "+faststart",
-                    clip_path,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=180,
-            )
-
-            if cut_result.returncode == 0 and os.path.exists(clip_path):
-                size_bytes = os.path.getsize(clip_path)
-                clips.append({
-                    "filename": clip_filename,
-                    "index": i + 1,
-                    "start": round(start, 2),
-                    "end": round(start + actual_duration, 2),
-                    "duration": round(actual_duration, 2),
-                    "size_bytes": size_bytes,
-                })
-
-            progress = 55 + int((i + 1) / total_clips * 40)
-            jobs[job_id]["progress"] = progress
-            jobs[job_id]["clips_done"] = i + 1
+        if cut_result.returncode != 0:
+            jobs[job_id]["status"] = "error"
+            jobs[job_id]["message"] = f"Gagal memotong video: {cut_result.stderr[-300:]}"
+            return
 
         if os.path.exists(video_path):
             os.remove(video_path)
+
+        clips = []
+        i = 0
+        t = 0.0
+        while True:
+            clip_filename = f"{job_id}_clip_{i:03d}.mp4"
+            clip_path = os.path.join(CLIPS_FOLDER, clip_filename)
+            if not os.path.exists(clip_path):
+                break
+            size_bytes = os.path.getsize(clip_path)
+            actual_duration = min(clip_duration, max(0, total_duration - t))
+            clips.append({
+                "filename": clip_filename,
+                "index": i + 1,
+                "start": round(t, 2),
+                "end": round(min(t + clip_duration, total_duration), 2),
+                "duration": round(actual_duration, 2),
+                "size_bytes": size_bytes,
+            })
+            t += step
+            i += 1
+
+        jobs[job_id]["clips_done"] = len(clips)
 
         jobs[job_id]["status"] = "done"
         jobs[job_id]["progress"] = 100
