@@ -5,10 +5,8 @@ import subprocess
 import math
 import sqlite3
 import secrets
-import ipaddress
-import socket
 from datetime import datetime, timezone
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, jsonify, send_from_directory, render_template, session, g
 
@@ -270,82 +268,6 @@ def safe_basename(filename):
 
 
 # Allowed video platforms. Subdomains are accepted automatically.
-# Allowed video platforms. Only direct platform hosts; short-link/redirect services are excluded.
-ALLOWED_VIDEO_HOSTS = {
-    "youtube.com",
-    "tiktok.com",
-    "instagram.com",
-    "facebook.com",
-    "twitter.com", "x.com",
-    "reddit.com",
-    "vimeo.com",
-    "dailymotion.com",
-    "twitch.tv",
-    "soundcloud.com",
-    "bilibili.com",
-    "linkedin.com",
-    "pinterest.com",
-    "snapchat.com",
-    "streamable.com",
-    "wistia.com",
-    "rumble.com",
-}
-
-
-def hostname_allowed(hostname):
-    lower = hostname.lower()
-    if lower.startswith("www."):
-        lower = lower[4:]
-    for allowed in ALLOWED_VIDEO_HOSTS:
-        if lower == allowed or lower.endswith("." + allowed):
-            return True
-    return False
-
-
-def validate_video_url(url):
-    """Validate a user-supplied video URL to reduce SSRF risk."""
-    if not url:
-        return "URL tidak boleh kosong"
-
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return "URL harus menggunakan http atau https"
-    if not parsed.netloc:
-        return "URL tidak valid"
-
-    hostname = parsed.hostname
-    if not hostname:
-        return "URL tidak valid"
-
-    lower = hostname.lower()
-    blocked = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
-    if lower in blocked or lower.startswith("127.") or lower.startswith("0."):
-        return "URL tidak diizinkan"
-
-    try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-            return "URL tidak diizinkan"
-    except ValueError:
-        pass
-
-    try:
-        resolved = socket.getaddrinfo(hostname, None)
-        for _, _, _, _, sockaddr in resolved:
-            ip_str = sockaddr[0]
-            try:
-                ip = ipaddress.ip_address(ip_str)
-                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-                    return "URL tidak diizinkan"
-            except ValueError:
-                continue
-    except socket.gaierror:
-        return "URL tidak valid atau tidak dapat dijangkau"
-
-    if not hostname_allowed(hostname):
-        return "Domain video tidak didukung"
-
-    return None
 
 
 @app.route("/")
@@ -437,9 +359,8 @@ def process_video():
     if not math.isfinite(clip_duration) or not math.isfinite(overlap):
         return jsonify({"error": "Durasi dan overlap harus berupa angka yang valid"}), 400
 
-    url_error = validate_video_url(url)
-    if url_error:
-        return jsonify({"error": url_error}), 400
+    if not url:
+        return jsonify({"error": "URL tidak boleh kosong"}), 400
     if clip_duration < 1 or clip_duration > 3600:
         return jsonify({"error": "Durasi klip harus antara 1 dan 3600 detik"}), 400
     if overlap < 0 or overlap >= clip_duration:
