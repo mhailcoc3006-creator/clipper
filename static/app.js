@@ -23,6 +23,11 @@ const clipCount = document.getElementById("clipCount");
 const downloadAllBtn = document.getElementById("downloadAllBtn");
 const clearAllBtn = document.getElementById("clearAllBtn");
 
+const historySection = document.getElementById("historySection");
+const historyList = document.getElementById("historyList");
+const historyCount = document.getElementById("historyCount");
+const refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
+
 const errorCard = document.getElementById("errorCard");
 const errorMessage = document.getElementById("errorMessage");
 
@@ -50,6 +55,12 @@ const registerPassword = document.getElementById("registerPassword");
 
 const toast = document.getElementById("toast");
 const toastMessage = document.getElementById("toastMessage");
+
+const shareModal = document.getElementById("shareModal");
+const shareModalClose = document.getElementById("shareModalClose");
+const shareUrlText = document.getElementById("shareUrlText");
+const shareGrid = document.getElementById("shareGrid");
+const copyShareUrl = document.getElementById("copyShareUrl");
 
 if (page === "dashboard") {
     // Preset buttons
@@ -270,28 +281,78 @@ function createClipCard(clip) {
 
 async function shareClip(filename, url) {
     try {
-        if (navigator.share) {
-            await navigator.share({
-                title: `Klip video — ${filename}`,
-                text: "Lihat klip hasil pemotongan dari AutoClip",
-                url,
-            });
-        } else {
+        const res = await fetch("/api/share-urls", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url, text: `Lihat klip video dari AutoClip: ${filename}` }),
+        });
+        if (!res.ok) throw new Error("Failed to get share URLs");
+        const links = await res.json();
+        openShareModal(url, links);
+    } catch {
+        try {
             await navigator.clipboard.writeText(url);
             showToast("Link klip disalin ke clipboard");
-        }
-    } catch (e) {
-        if (e.name !== "AbortError") {
+        } catch {
             showToast("Gagal membagikan klip");
         }
     }
+}
+
+function openShareModal(url, links) {
+    shareUrlText.textContent = url;
+    shareGrid.innerHTML = "";
+
+    const platforms = [
+        { key: "facebook", label: "Facebook", icon: "📘" },
+        { key: "twitter", label: "Twitter/X", icon: "𝕏" },
+        { key: "whatsapp", label: "WhatsApp", icon: "💬" },
+        { key: "telegram", label: "Telegram", icon: "✈️" },
+        { key: "linkedin", label: "LinkedIn", icon: "💼" },
+    ];
+
+    platforms.forEach((p) => {
+        const link = links[p.key];
+        if (!link) return;
+        const btn = document.createElement("a");
+        btn.href = link;
+        btn.target = "_blank";
+        btn.rel = "noopener noreferrer";
+        btn.className = "share-btn";
+        btn.innerHTML = `<span class="share-icon">${p.icon}</span><span class="share-label">${p.label}</span>`;
+        shareGrid.appendChild(btn);
+    });
+
+    copyShareUrl.onclick = async () => {
+        try {
+            await navigator.clipboard.writeText(url);
+            showToast("Link disalin ke clipboard");
+        } catch {
+            showToast("Gagal menyalin link");
+        }
+    };
+
+    shareModal.style.display = "flex";
+}
+
+function closeShareModal() {
+    shareModal.style.display = "none";
+}
+
+if (shareModalClose) {
+    shareModalClose.addEventListener("click", closeShareModal);
+}
+if (shareModal) {
+    shareModal.addEventListener("click", (e) => {
+        if (e.target === shareModal) closeShareModal();
+    });
 }
 
 async function deleteClip(filename, btn) {
     btn.disabled = true;
     btn.textContent = "...";
     try {
-        await fetch(`/api/clips/${filename}`, { method: "DELETE" });
+        await fetch(`/api/clips/${encodeURIComponent(filename)}`, { method: "DELETE" });
         const card = document.querySelector(`.clip-card[data-filename="${filename}"]`);
         if (card) {
             card.style.transform = "scale(0.92) opacity(0)";
@@ -304,6 +365,7 @@ async function deleteClip(filename, btn) {
         if (remaining === 0) {
             resultsSection.style.display = "none";
         }
+        loadHistory();
     } catch {
         btn.disabled = false;
         btn.textContent = "🗑️ Hapus";
@@ -324,10 +386,11 @@ function downloadAll(clips) {
 async function clearAll(clips) {
     if (!confirm(`Hapus semua ${clips.length} klip? Tindakan ini tidak dapat dibatalkan.`)) return;
     for (const clip of clips) {
-        await fetch(`/api/clips/${clip.filename}`, { method: "DELETE" });
+        await fetch(`/api/clips/${encodeURIComponent(clip.filename)}`, { method: "DELETE" });
     }
     resultsSection.style.display = "none";
     clipsGrid.innerHTML = "";
+    loadHistory();
 }
 
 function showError(msg) {
@@ -511,6 +574,9 @@ async function checkAuth() {
         if (data.user) {
             currentUser = data.user;
             updateAuthUI();
+            if (page === "dashboard" && historySection) {
+                loadHistory();
+            }
         } else if (page === "dashboard") {
             window.location.href = "/";
         }
@@ -519,6 +585,113 @@ async function checkAuth() {
             window.location.href = "/";
         }
     }
+}
+
+async function loadHistory() {
+    if (!historySection || !historyList) return;
+    try {
+        const res = await fetch("/api/history");
+        if (!res.ok) return;
+        const data = await res.json();
+        const history = data.history || [];
+        renderHistory(history);
+    } catch {
+        // ignore
+    }
+}
+
+function renderHistory(history) {
+    historyList.innerHTML = "";
+
+    const clips = history
+        .filter((job) => job.status === "done" && job.clips && job.clips.length > 0)
+        .flatMap((job) =>
+            job.clips.map((clip) => ({
+                ...clip,
+                job_id: job.job_id,
+                created_at: job.created_at,
+            }))
+        )
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    historyCount.textContent = `${clips.length} klip tersimpan`;
+    historySection.style.display = clips.length > 0 ? "block" : "none";
+
+    if (clips.length === 0) {
+        historySection.style.display = "none";
+        return;
+    }
+
+    clips.forEach((clip) => {
+        const row = createHistoryRow(clip);
+        historyList.appendChild(row);
+    });
+}
+
+function createHistoryRow(clip) {
+    const item = document.createElement("div");
+    item.className = "history-item morph";
+    item.dataset.filename = clip.filename;
+
+    const duration = formatDuration(clip.duration);
+    const size = formatSize(clip.size_bytes);
+    const timeRange = `${formatTime(clip.start)} → ${formatTime(clip.end)}`;
+    const shareUrl = `${location.origin}/api/clips/${encodeURIComponent(clip.filename)}`;
+
+    const info = document.createElement("div");
+    info.className = "history-info";
+
+    const title = document.createElement("div");
+    title.className = "history-title";
+    title.textContent = `Klip ${clip.index}`;
+
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+    meta.innerHTML = `<span>🕐 ${duration}</span><span>📦 ${size}</span><span>${timeRange}</span>`;
+
+    info.append(title, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+
+    const downloadLink = document.createElement("a");
+    downloadLink.href = `/api/clips/${encodeURIComponent(clip.filename)}`;
+    downloadLink.download = clip.filename;
+    downloadLink.className = "btn-secondary btn-xs";
+    downloadLink.textContent = "⬇️ Unduh";
+
+    const shareBtn = document.createElement("button");
+    shareBtn.className = "btn-ghost btn-xs";
+    shareBtn.textContent = "🔗 Bagikan";
+    shareBtn.addEventListener("click", () => shareClip(clip.filename, shareUrl));
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "btn-ghost btn-xs btn-danger";
+    deleteBtn.textContent = "🗑️ Hapus";
+    deleteBtn.addEventListener("click", async () => {
+        deleteBtn.disabled = true;
+        deleteBtn.textContent = "...";
+        try {
+            await fetch(`/api/clips/${encodeURIComponent(clip.filename)}`, { method: "DELETE" });
+            item.style.opacity = "0";
+            item.style.transform = "translateX(-20px)";
+            setTimeout(() => {
+                item.remove();
+                loadHistory();
+            }, 250);
+        } catch {
+            deleteBtn.disabled = false;
+            deleteBtn.textContent = "🗑️ Hapus";
+        }
+    });
+
+    actions.append(downloadLink, shareBtn, deleteBtn);
+    item.append(info, actions);
+    return item;
+}
+
+if (refreshHistoryBtn) {
+    refreshHistoryBtn.addEventListener("click", loadHistory);
 }
 
 checkAuth();

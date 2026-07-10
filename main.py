@@ -5,7 +5,10 @@ import subprocess
 import math
 import sqlite3
 import secrets
+import ipaddress
+import socket
 from datetime import datetime, timezone
+from urllib.parse import quote, urlparse
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, jsonify, send_from_directory, render_template, session, g
 
@@ -57,6 +60,43 @@ def init_db():
         )
         """
     )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT UNIQUE NOT NULL,
+            user_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            clip_duration REAL,
+            overlap REAL,
+            status TEXT,
+            progress INTEGER DEFAULT 0,
+            message TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS clips (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            clip_index INTEGER,
+            start REAL,
+            end REAL,
+            duration REAL,
+            size_bytes INTEGER,
+            deleted INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
     db.commit()
     db.close()
 
@@ -79,11 +119,31 @@ def get_video_duration(video_path):
     return float(result.stdout.strip())
 
 
-def run_job(job_id, url, clip_duration, overlap):
+def run_job(job_id, user_id, url, clip_duration, overlap):
+    db = sqlite3.connect(DB_PATH)
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "INSERT INTO jobs (job_id, user_id, url, clip_duration, overlap, status, progress, message, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (job_id, user_id, url, clip_duration, overlap, "queued", 0, "Memulai proses...", now),
+    )
+    db.commit()
+    db.close()
+
+    def update_job(status, progress, message, completed=False):
+        jobs[job_id]["status"] = status
+        jobs[job_id]["progress"] = progress
+        jobs[job_id]["message"] = message
+        db = sqlite3.connect(DB_PATH)
+        completed_at = datetime.now(timezone.utc).isoformat() if completed else None
+        db.execute(
+            "UPDATE jobs SET status = ?, progress = ?, message = ?, completed_at = ? WHERE job_id = ?",
+            (status, progress, message, completed_at, job_id),
+        )
+        db.commit()
+        db.close()
+
     try:
-        jobs[job_id]["status"] = "downloading"
-        jobs[job_id]["progress"] = 5
-        jobs[job_id]["message"] = "Mengunduh video..."
+        update_job("downloading", 5, "Mengunduh video...")
 
         video_path = os.path.join(UPLOAD_FOLDER, f"{job_id}.mp4")
 
@@ -103,13 +163,10 @@ def run_job(job_id, url, clip_duration, overlap):
         )
 
         if dl_result.returncode != 0:
-            jobs[job_id]["status"] = "error"
-            jobs[job_id]["message"] = f"Gagal mengunduh video: {dl_result.stderr[-300:]}"
+            update_job("error", 5, f"Gagal mengunduh video: {dl_result.stderr[-300:]}")
             return
 
-        jobs[job_id]["progress"] = 45
-        jobs[job_id]["status"] = "analyzing"
-        jobs[job_id]["message"] = "Menganalisis durasi video..."
+        update_job("analyzing", 45, "Menganalisis durasi video...")
 
         total_duration = get_video_duration(video_path)
         step = clip_duration - overlap
@@ -118,9 +175,7 @@ def run_job(job_id, url, clip_duration, overlap):
 
         estimated_clips = max(1, int(total_duration / step))
         jobs[job_id]["total_scenes"] = estimated_clips
-        jobs[job_id]["progress"] = 55
-        jobs[job_id]["status"] = "clipping"
-        jobs[job_id]["message"] = f"Memotong menjadi ~{estimated_clips} klip (stream copy)..."
+        update_job("clipping", 55, f"Memotong menjadi ~{estimated_clips} klip (stream copy)...")
 
         clip_pattern = os.path.join(CLIPS_FOLDER, f"{job_id}_clip_%03d.mp4")
 
@@ -141,8 +196,7 @@ def run_job(job_id, url, clip_duration, overlap):
         )
 
         if cut_result.returncode != 0:
-            jobs[job_id]["status"] = "error"
-            jobs[job_id]["message"] = f"Gagal memotong video: {cut_result.stderr[-300:]}"
+            update_job("error", 55, f"Gagal memotong video: {cut_result.stderr[-300:]}")
             return
 
         if os.path.exists(video_path):
@@ -171,14 +225,30 @@ def run_job(job_id, url, clip_duration, overlap):
 
         jobs[job_id]["clips_done"] = len(clips)
 
-        jobs[job_id]["status"] = "done"
-        jobs[job_id]["progress"] = 100
-        jobs[job_id]["message"] = f"Selesai! {len(clips)} klip berhasil dibuat."
+        now = datetime.now(timezone.utc).isoformat()
+        db = sqlite3.connect(DB_PATH)
+        for clip in clips:
+            db.execute(
+                """
+                INSERT INTO clips (job_id, user_id, filename, clip_index, start, end, duration, size_bytes, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (job_id, user_id, clip["filename"], clip["index"], clip["start"], clip["end"], clip["duration"], clip["size_bytes"], now),
+            )
+        db.commit()
+        db.close()
+
+        update_job("done", 100, f"Selesai! {len(clips)} klip berhasil dibuat.", completed=True)
         jobs[job_id]["clips"] = clips
 
     except Exception as e:
+        error_msg = str(e)
         jobs[job_id]["status"] = "error"
-        jobs[job_id]["message"] = str(e)
+        jobs[job_id]["message"] = error_msg
+        db = sqlite3.connect(DB_PATH)
+        db.execute("UPDATE jobs SET status = ?, message = ? WHERE job_id = ?", ("error", error_msg, job_id))
+        db.commit()
+        db.close()
 
 
 def login_required(f):
@@ -189,6 +259,93 @@ def login_required(f):
             return jsonify({"error": "Silakan masuk terlebih dahulu"}), 401
         return f(*args, **kwargs)
     return decorated
+
+
+def safe_basename(filename):
+    """Return a safe basename for a clip file, or None if invalid."""
+    base = os.path.basename(filename)
+    if base != filename or not base or "/" in base or "\\" in base or ".." in base:
+        return None
+    return base
+
+
+# Allowed video platforms. Subdomains are accepted automatically.
+# Allowed video platforms. Only direct platform hosts; short-link/redirect services are excluded.
+ALLOWED_VIDEO_HOSTS = {
+    "youtube.com",
+    "tiktok.com",
+    "instagram.com",
+    "facebook.com",
+    "twitter.com", "x.com",
+    "reddit.com",
+    "vimeo.com",
+    "dailymotion.com",
+    "twitch.tv",
+    "soundcloud.com",
+    "bilibili.com",
+    "linkedin.com",
+    "pinterest.com",
+    "snapchat.com",
+    "streamable.com",
+    "wistia.com",
+    "rumble.com",
+}
+
+
+def hostname_allowed(hostname):
+    lower = hostname.lower()
+    if lower.startswith("www."):
+        lower = lower[4:]
+    for allowed in ALLOWED_VIDEO_HOSTS:
+        if lower == allowed or lower.endswith("." + allowed):
+            return True
+    return False
+
+
+def validate_video_url(url):
+    """Validate a user-supplied video URL to reduce SSRF risk."""
+    if not url:
+        return "URL tidak boleh kosong"
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return "URL harus menggunakan http atau https"
+    if not parsed.netloc:
+        return "URL tidak valid"
+
+    hostname = parsed.hostname
+    if not hostname:
+        return "URL tidak valid"
+
+    lower = hostname.lower()
+    blocked = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
+    if lower in blocked or lower.startswith("127.") or lower.startswith("0."):
+        return "URL tidak diizinkan"
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return "URL tidak diizinkan"
+    except ValueError:
+        pass
+
+    try:
+        resolved = socket.getaddrinfo(hostname, None)
+        for _, _, _, _, sockaddr in resolved:
+            ip_str = sockaddr[0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                    return "URL tidak diizinkan"
+            except ValueError:
+                continue
+    except socket.gaierror:
+        return "URL tidak valid atau tidak dapat dijangkau"
+
+    if not hostname_allowed(hostname):
+        return "Domain video tidak didukung"
+
+    return None
 
 
 @app.route("/")
@@ -263,7 +420,9 @@ def logout():
 
 
 @app.route("/api/process", methods=["POST"])
+@login_required
 def process_video():
+    user_id = session["user_id"]
     data = request.get_json(silent=True) or {}
     url = data.get("url", "").strip()
     clip_duration = data.get("clip_duration", 30)
@@ -275,12 +434,16 @@ def process_video():
     except (ValueError, TypeError):
         return jsonify({"error": "Durasi dan overlap harus berupa angka"}), 400
 
-    if not url:
-        return jsonify({"error": "URL tidak boleh kosong"}), 400
-    if clip_duration < 1:
-        return jsonify({"error": "Durasi klip minimal 1 detik"}), 400
-    if overlap < 0:
-        return jsonify({"error": "Overlap tidak boleh negatif"}), 400
+    if not math.isfinite(clip_duration) or not math.isfinite(overlap):
+        return jsonify({"error": "Durasi dan overlap harus berupa angka yang valid"}), 400
+
+    url_error = validate_video_url(url)
+    if url_error:
+        return jsonify({"error": url_error}), 400
+    if clip_duration < 1 or clip_duration > 3600:
+        return jsonify({"error": "Durasi klip harus antara 1 dan 3600 detik"}), 400
+    if overlap < 0 or overlap >= clip_duration:
+        return jsonify({"error": "Overlap harus 0 atau lebih kecil dari durasi klip"}), 400
 
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {
@@ -291,7 +454,7 @@ def process_video():
         "url": url,
     }
 
-    thread = threading.Thread(target=run_job, args=(job_id, url, clip_duration, overlap))
+    thread = threading.Thread(target=run_job, args=(job_id, user_id, url, clip_duration, overlap))
     thread.daemon = True
     thread.start()
 
@@ -299,40 +462,194 @@ def process_video():
 
 
 @app.route("/api/status/<job_id>")
+@login_required
 def job_status(job_id):
-    job = jobs.get(job_id)
-    if not job:
+    user_id = session["user_id"]
+    db = get_db()
+    row = db.execute(
+        "SELECT job_id, url, clip_duration, overlap, status, progress, message, created_at, completed_at FROM jobs WHERE job_id = ? AND user_id = ?",
+        (job_id, user_id),
+    ).fetchone()
+    if not row:
         return jsonify({"error": "Job tidak ditemukan"}), 404
+
+    job = dict(row)
+    job["clips"] = []
+
+    in_memory = jobs.get(job_id)
+    if in_memory:
+        job.update({
+            "status": in_memory.get("status", job["status"]),
+            "progress": in_memory.get("progress", job["progress"]),
+            "message": in_memory.get("message", job["message"]),
+            "total_scenes": in_memory.get("total_scenes"),
+            "clips_done": in_memory.get("clips_done"),
+        })
+        if in_memory.get("clips"):
+            job["clips"] = in_memory["clips"]
+        elif job["status"] == "done":
+            clips = db.execute(
+                "SELECT filename, clip_index, start, end, duration, size_bytes FROM clips WHERE job_id = ? AND user_id = ? AND deleted = 0 ORDER BY clip_index",
+                (job_id, user_id),
+            ).fetchall()
+            job["clips"] = [dict(c) for c in clips]
+    elif job["status"] == "done":
+        clips = db.execute(
+            "SELECT filename, clip_index, start, end, duration, size_bytes FROM clips WHERE job_id = ? AND user_id = ? AND deleted = 0 ORDER BY clip_index",
+            (job_id, user_id),
+        ).fetchall()
+        job["clips"] = [dict(c) for c in clips]
+
     return jsonify(job)
 
 
 @app.route("/api/clips/<filename>")
+@login_required
 def serve_clip(filename):
-    return send_from_directory(CLIPS_FOLDER, filename)
+    user_id = session["user_id"]
+    base = safe_basename(filename)
+    if not base:
+        return jsonify({"error": "Nama file tidak valid"}), 400
+
+    db = get_db()
+    row = db.execute(
+        "SELECT id FROM clips WHERE filename = ? AND user_id = ? AND deleted = 0",
+        (base, user_id),
+    ).fetchone()
+    if not row:
+        return jsonify({"error": "File tidak ditemukan"}), 404
+
+    return send_from_directory(CLIPS_FOLDER, base)
 
 
 @app.route("/api/clips/<filename>", methods=["DELETE"])
+@login_required
 def delete_clip(filename):
-    clip_path = os.path.join(CLIPS_FOLDER, filename)
+    user_id = session["user_id"]
+    base = safe_basename(filename)
+    if not base:
+        return jsonify({"error": "Nama file tidak valid"}), 400
+
+    db = get_db()
+    row = db.execute(
+        "SELECT id FROM clips WHERE filename = ? AND user_id = ? AND deleted = 0",
+        (base, user_id),
+    ).fetchone()
+    if not row:
+        return jsonify({"error": "File tidak ditemukan"}), 404
+
+    clip_path = os.path.join(CLIPS_FOLDER, base)
     if os.path.exists(clip_path):
         os.remove(clip_path)
-        return jsonify({"success": True})
-    return jsonify({"error": "File tidak ditemukan"}), 404
+    db.execute(
+        "UPDATE clips SET deleted = 1 WHERE filename = ? AND user_id = ?",
+        (base, user_id),
+    )
+    db.commit()
+    return jsonify({"success": True})
 
 
 @app.route("/api/clips")
+@login_required
 def list_clips():
-    clips = []
-    for fname in os.listdir(CLIPS_FOLDER):
-        if fname.endswith(".mp4"):
-            fpath = os.path.join(CLIPS_FOLDER, fname)
-            clips.append({
-                "filename": fname,
-                "size_bytes": os.path.getsize(fpath),
-                "modified": os.path.getmtime(fpath),
-            })
-    clips.sort(key=lambda x: x["modified"], reverse=True)
+    user_id = session["user_id"]
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT c.filename, c.size_bytes, c.created_at
+        FROM clips c
+        JOIN jobs j ON c.job_id = j.job_id
+        WHERE c.user_id = ? AND c.deleted = 0 AND j.status = 'done'
+        ORDER BY c.created_at DESC
+        """,
+        (user_id,),
+    ).fetchall()
+    clips = [dict(row) for row in rows]
     return jsonify(clips)
+
+
+@app.route("/api/history")
+@login_required
+def history():
+    user_id = session["user_id"]
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT
+            j.job_id,
+            j.url,
+            j.clip_duration,
+            j.overlap,
+            j.status,
+            j.progress,
+            j.message,
+            j.created_at,
+            j.completed_at,
+            c.filename,
+            c.clip_index,
+            c.start,
+            c.end,
+            c.duration,
+            c.size_bytes
+        FROM jobs j
+        LEFT JOIN clips c ON j.job_id = c.job_id AND c.deleted = 0
+        WHERE j.user_id = ?
+        ORDER BY j.created_at DESC, c.clip_index ASC
+        """,
+        (user_id,),
+    ).fetchall()
+
+    grouped = {}
+    for row in rows:
+        job_id = row["job_id"]
+        if job_id not in grouped:
+            grouped[job_id] = {
+                "job_id": job_id,
+                "url": row["url"],
+                "clip_duration": row["clip_duration"],
+                "overlap": row["overlap"],
+                "status": row["status"],
+                "progress": row["progress"],
+                "message": row["message"],
+                "created_at": row["created_at"],
+                "completed_at": row["completed_at"],
+                "clips": [],
+            }
+        if row["filename"]:
+            grouped[job_id]["clips"].append({
+                "filename": row["filename"],
+                "index": row["clip_index"],
+                "start": row["start"],
+                "end": row["end"],
+                "duration": row["duration"],
+                "size_bytes": row["size_bytes"],
+            })
+
+    return jsonify({"history": list(grouped.values())})
+
+
+@app.route("/api/share-urls", methods=["POST"])
+@login_required
+def share_urls():
+    data = request.get_json(silent=True) or {}
+    url = data.get("url", "").strip()
+    text = data.get("text", "Lihat klip dari AutoClip").strip()
+    if not url:
+        return jsonify({"error": "URL wajib diisi"}), 400
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return jsonify({"error": "URL harus menggunakan http atau https"}), 400
+
+    def enc(s):
+        return quote(s, safe="")
+
+    return jsonify({
+        "facebook": f"https://www.facebook.com/sharer/sharer.php?u={enc(url)}",
+        "twitter": f"https://twitter.com/intent/tweet?url={enc(url)}&text={enc(text)}",
+        "whatsapp": f"https://wa.me/?text={enc(text + ' ' + url)}",
+        "telegram": f"https://t.me/share/url?url={enc(url)}&text={enc(text)}",
+        "linkedin": f"https://www.linkedin.com/sharing/share-offsite/?url={enc(url)}",
+        "copy": url,
+    })
 
 
 if __name__ == "__main__":

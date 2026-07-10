@@ -132,6 +132,18 @@
             </div>
         </section>
 
+        <!-- History Section -->
+        <section id="historySection" style="display:none">
+            <div class="results-header morph-bar">
+                <h2 class="section-title">Riwayat Klip</h2>
+                <div class="results-actions">
+                    <span class="clip-count" id="historyCount"></span>
+                    <button id="refreshHistoryBtn" class="btn-ghost">🔄 Segarkan</button>
+                </div>
+            </div>
+            <div class="history-list" id="historyList"></div>
+        </section>
+
         <!-- Results Section -->
         <section id="resultsSection" style="display:none">
             <div class="results-header morph-bar">
@@ -192,6 +204,17 @@
                 <div class="auth-error" id="registerError"></div>
                 <button type="submit" class="btn-primary btn-glow">Daftar</button>
             </form>
+        </div>
+    </div>
+
+    <!-- Share Modal -->
+    <div class="modal-overlay" id="shareModal" style="display:none">
+        <div class="modal morph share-modal">
+            <button class="modal-close" id="shareModalClose">×</button>
+            <h3 class="share-title">Bagikan Klip</h3>
+            <p class="share-url" id="shareUrlText"></p>
+            <div class="share-grid" id="shareGrid"></div>
+            <button class="btn-ghost btn-full" id="copyShareUrl">📋 Salin Link</button>
         </div>
     </div>
 
