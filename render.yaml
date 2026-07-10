@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: clipper
+    env: python
+    plan: free
+    startCommand: python main.py
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+    buildCommand: pip install -r requirements.txt
