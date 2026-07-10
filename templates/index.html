@@ -3,26 +3,64 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AutoClip - Potong Video Otomatis</title>
+    <title>AutoClip — Potong Video Otomatis</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-    <div class="bg-gradient"></div>
+    <div class="ambient">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+        <div class="noise"></div>
+    </div>
 
     <header class="header">
-        <div class="logo">
-            <span class="logo-icon">✂️</span>
-            <span class="logo-text">AutoClip</span>
+        <div class="header-inner">
+            <div class="logo">
+                <div class="logo-bubble">
+                    <span class="logo-icon">✂️</span>
+                </div>
+                <div class="logo-text-wrap">
+                    <span class="logo-text">AutoClip</span>
+                    <span class="logo-badge">beta</span>
+                </div>
+            </div>
+
+            <div class="auth-bar" id="authBar">
+                <button class="btn-ghost btn-sm" id="loginBtn">Masuk</button>
+                <button class="btn-primary btn-sm" id="registerBtn">Daftar</button>
+            </div>
+
+            <div class="user-bar" id="userBar" style="display:none">
+                <div class="user-pill">
+                    <span class="user-avatar" id="userAvatar">?</span>
+                    <span class="user-name" id="userName">-</span>
+                </div>
+                <button class="btn-ghost btn-sm" id="logoutBtn">Keluar</button>
+            </div>
         </div>
-        <p class="tagline">Tempel URL video, kami potong otomatis berdasarkan durasi yang Anda tentukan</p>
     </header>
 
     <main class="container">
+        <div class="hero">
+            <h1 class="hero-title">Potong video otomatis,<br/><span class="gradient-text">dalam hitungan detik.</span></h1>
+            <p class="hero-desc">
+                Tempel URL dari YouTube, TikTok, Instagram, Twitter/X, Facebook, atau ratusan platform lain.
+                Kami akan mengunduh dan memotongnya sesuai durasi yang Anda inginkan.
+            </p>
+        </div>
 
         <!-- Input Section -->
-        <section class="card input-card">
-            <h2 class="section-title">Masukkan URL Video</h2>
-            <p class="section-desc">Mendukung YouTube, Twitter/X, Instagram, TikTok, Facebook, dan ratusan platform lain</p>
+        <section class="card input-card morph">
+            <div class="input-header">
+                <div class="input-title">
+                    <span class="input-icon">🔗</span>
+                    <span>Masukkan URL Video</span>
+                </div>
+            </div>
 
             <div class="form-group">
                 <label for="urlInput">URL Video</label>
@@ -45,7 +83,7 @@
                         <span class="hint">dalam detik</span>
                     </label>
                     <div class="duration-input-wrap">
-                        <input type="number" id="clipDurationInput" min="1" max="3600" value="30" step="1" />
+                        <input type="number" id="clipDurationInput" min="1" max="3600" value="60" step="1" />
                         <span class="duration-unit">detik</span>
                     </div>
                     <div class="duration-presets">
@@ -58,7 +96,7 @@
                 </div>
             </div>
 
-            <details class="advanced-toggle">
+            <details class="advanced-toggle morph-inner">
                 <summary>Pengaturan Lanjutan</summary>
                 <div class="advanced-grid">
                     <div class="form-group">
@@ -74,13 +112,13 @@
                 </div>
             </details>
 
-            <button id="processBtn" class="btn-primary">
+            <button id="processBtn" class="btn-primary btn-glow">
                 <span class="btn-icon-left">⚡</span> Proses Video
             </button>
         </section>
 
         <!-- Progress Section -->
-        <section class="card progress-card" id="progressCard" style="display:none">
+        <section class="card progress-card morph" id="progressCard" style="display:none">
             <div class="progress-header">
                 <div class="spinner"></div>
                 <div>
@@ -99,7 +137,7 @@
 
         <!-- Results Section -->
         <section id="resultsSection" style="display:none">
-            <div class="results-header">
+            <div class="results-header morph-bar">
                 <h2 class="section-title">Klip Hasil Pemotongan</h2>
                 <div class="results-actions">
                     <span class="clip-count" id="clipCount"></span>
@@ -111,18 +149,59 @@
         </section>
 
         <!-- Error Section -->
-        <section class="card error-card" id="errorCard" style="display:none">
+        <section class="card error-card morph" id="errorCard" style="display:none">
             <div class="error-icon">⚠️</div>
             <h3>Terjadi Kesalahan</h3>
             <p id="errorMessage"></p>
             <button class="btn-primary" onclick="resetForm()">Coba Lagi</button>
         </section>
-
     </main>
 
     <footer class="footer">
         <p>Didukung oleh yt-dlp · FFmpeg</p>
     </footer>
+
+    <!-- Auth Modal -->
+    <div class="modal-overlay" id="authModal" style="display:none">
+        <div class="modal morph">
+            <button class="modal-close" id="authModalClose">×</button>
+            <div class="modal-tabs">
+                <button class="modal-tab active" data-tab="login">Masuk</button>
+                <button class="modal-tab" data-tab="register">Daftar</button>
+            </div>
+
+            <form id="loginForm" class="auth-form">
+                <div class="form-group">
+                    <label for="loginUsername">Username</label>
+                    <input type="text" id="loginUsername" autocomplete="username" required />
+                </div>
+                <div class="form-group">
+                    <label for="loginPassword">Password</label>
+                    <input type="password" id="loginPassword" autocomplete="current-password" required />
+                </div>
+                <div class="auth-error" id="loginError"></div>
+                <button type="submit" class="btn-primary btn-glow">Masuk</button>
+            </form>
+
+            <form id="registerForm" class="auth-form" style="display:none">
+                <div class="form-group">
+                    <label for="registerUsername">Username</label>
+                    <input type="text" id="registerUsername" autocomplete="username" required />
+                </div>
+                <div class="form-group">
+                    <label for="registerPassword">Password</label>
+                    <input type="password" id="registerPassword" autocomplete="new-password" required />
+                </div>
+                <div class="auth-error" id="registerError"></div>
+                <button type="submit" class="btn-primary btn-glow">Daftar</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast" style="display:none">
+        <span id="toastMessage"></span>
+    </div>
 
     <script src="/static/app.js"></script>
 </body>
