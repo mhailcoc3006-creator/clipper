@@ -181,9 +181,26 @@ def run_job(job_id, url, clip_duration, overlap):
         jobs[job_id]["message"] = str(e)
 
 
+def login_required(f):
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if "user_id" not in session:
+            return jsonify({"error": "Silakan masuk terlebih dahulu"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/dashboard")
+def dashboard():
+    if "user_id" not in session:
+        return render_template("index.html")
+    return render_template("dashboard.html")
 
 
 @app.route("/api/me")

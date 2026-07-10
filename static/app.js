@@ -2,6 +2,8 @@ let currentJobId = null;
 let pollInterval = null;
 let currentUser = null;
 
+const page = document.body.dataset.page || "landing";
+
 const urlInput = document.getElementById("urlInput");
 const processBtn = document.getElementById("processBtn");
 const pasteBtn = document.getElementById("pasteBtn");
@@ -31,6 +33,8 @@ const registerBtn = document.getElementById("registerBtn");
 const logoutBtn = document.getElementById("logoutBtn");
 const userName = document.getElementById("userName");
 const userAvatar = document.getElementById("userAvatar");
+const heroCta = document.getElementById("heroCta");
+const heroLogin = document.getElementById("heroLogin");
 
 const authModal = document.getElementById("authModal");
 const authModalClose = document.getElementById("authModalClose");
@@ -47,44 +51,49 @@ const registerPassword = document.getElementById("registerPassword");
 const toast = document.getElementById("toast");
 const toastMessage = document.getElementById("toastMessage");
 
-// Preset buttons
-const presetButtons = document.querySelectorAll(".preset-btn");
-presetButtons.forEach((btn) => {
-    btn.addEventListener("click", () => {
+if (page === "dashboard") {
+    // Preset buttons
+    const presetButtons = document.querySelectorAll(".preset-btn");
+    presetButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+            presetButtons.forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+            clipDurationInput.value = btn.dataset.val;
+        });
+    });
+
+    clipDurationInput.addEventListener("input", () => {
         presetButtons.forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        clipDurationInput.value = btn.dataset.val;
+        const val = parseInt(clipDurationInput.value);
+        presetButtons.forEach((b) => {
+            if (parseInt(b.dataset.val) === val) b.classList.add("active");
+        });
     });
-});
 
-clipDurationInput.addEventListener("input", () => {
-    presetButtons.forEach((b) => b.classList.remove("active"));
-    const val = parseInt(clipDurationInput.value);
-    presetButtons.forEach((b) => {
-        if (parseInt(b.dataset.val) === val) b.classList.add("active");
+    overlapInput.addEventListener("input", () => {
+        overlapValue.textContent = overlapInput.value + " dtk";
     });
-});
 
-overlapInput.addEventListener("input", () => {
-    overlapValue.textContent = overlapInput.value + " dtk";
-});
+    // Paste button
+    pasteBtn.addEventListener("click", async () => {
+        try {
+            const text = await navigator.clipboard.readText();
+            urlInput.value = text.trim();
+            urlInput.focus();
+        } catch {
+            urlInput.focus();
+        }
+    });
 
-// Paste button
-pasteBtn.addEventListener("click", async () => {
-    try {
-        const text = await navigator.clipboard.readText();
-        urlInput.value = text.trim();
-        urlInput.focus();
-    } catch {
-        urlInput.focus();
-    }
-});
-
-// Process button
-processBtn.addEventListener("click", startProcessing);
-urlInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") startProcessing();
-});
+    // Process button
+    processBtn.addEventListener("click", startProcessing);
+    urlInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") startProcessing();
+    });
+} else if (page === "landing") {
+    if (heroCta) heroCta.addEventListener("click", () => openAuthModal("register"));
+    if (heroLogin) heroLogin.addEventListener("click", () => openAuthModal("login"));
+}
 
 async function startProcessing() {
     const url = urlInput.value.trim();
@@ -431,6 +440,9 @@ loginForm.addEventListener("submit", async (e) => {
         updateAuthUI();
         closeAuthModal();
         showToast(`Selamat datang, ${currentUser.username}!`);
+        if (page === "landing") {
+            window.location.href = "/dashboard";
+        }
     } catch {
         loginError.textContent = "Tidak dapat terhubung ke server";
         loginError.classList.add("visible");
@@ -459,28 +471,36 @@ registerForm.addEventListener("submit", async (e) => {
         updateAuthUI();
         closeAuthModal();
         showToast(`Akun ${currentUser.username} berhasil dibuat!`);
+        if (page === "landing") {
+            window.location.href = "/dashboard";
+        }
     } catch {
         registerError.textContent = "Tidak dapat terhubung ke server";
         registerError.classList.add("visible");
     }
 });
 
-logoutBtn.addEventListener("click", async () => {
-    await fetch("/api/logout", { method: "POST" });
-    currentUser = null;
-    updateAuthUI();
-    showToast("Anda telah keluar");
-});
+if (logoutBtn) {
+    logoutBtn.addEventListener("click", async () => {
+        await fetch("/api/logout", { method: "POST" });
+        currentUser = null;
+        updateAuthUI();
+        showToast("Anda telah keluar");
+        if (page === "dashboard") {
+            window.location.href = "/";
+        }
+    });
+}
 
 function updateAuthUI() {
     if (currentUser) {
-        authBar.style.display = "none";
-        userBar.style.display = "flex";
-        userName.textContent = currentUser.username;
-        userAvatar.textContent = currentUser.username.charAt(0).toUpperCase();
+        if (authBar) authBar.style.display = "none";
+        if (userBar) userBar.style.display = "flex";
+        if (userName) userName.textContent = currentUser.username;
+        if (userAvatar) userAvatar.textContent = currentUser.username.charAt(0).toUpperCase();
     } else {
-        authBar.style.display = "flex";
-        userBar.style.display = "none";
+        if (authBar) authBar.style.display = "flex";
+        if (userBar) userBar.style.display = "none";
     }
 }
 
@@ -491,9 +511,13 @@ async function checkAuth() {
         if (data.user) {
             currentUser = data.user;
             updateAuthUI();
+        } else if (page === "dashboard") {
+            window.location.href = "/";
         }
     } catch {
-        // ignore
+        if (page === "dashboard") {
+            window.location.href = "/";
+        }
     }
 }
 
